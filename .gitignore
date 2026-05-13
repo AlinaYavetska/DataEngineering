@@ -1,0 +1,3 @@
+producer/data/*.csv
+producer/data/*.zip
+!producer/data/.gitkeep
