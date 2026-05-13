@@ -1,16 +1,16 @@
 version: "3.8"
 
-# Lab 4 розширює Lab 3 — додає Java Kafka Streams застосунок.
-# Сервіси Kafka/Zookeeper/Kafka UI/Producer ті ж самі (продубльовані тут, щоб lab4 запускалась окремо).
+# Lab 5 — Lab 4 + Iceberg Lakehouse (Polaris + Trino + MinIO)
 
 services:
+  # ---------- Kafka stack (from lab3/lab4) ----------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    networks: [kafka-net]
+    networks: [local-iceberg-lakehouse]
 
   broker1:
     image: confluentinc/cp-kafka:7.6.1
@@ -27,7 +27,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    networks: [kafka-net]
+    networks: [local-iceberg-lakehouse]
 
   broker2:
     image: confluentinc/cp-kafka:7.6.1
@@ -44,7 +44,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    networks: [kafka-net]
+    networks: [local-iceberg-lakehouse]
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.1
@@ -56,9 +56,8 @@ services:
       for t in Topic1 Topic2 avg-duration-per-day trips-count-per-day top-start-station-per-day top3-stations-per-day; do
         kafka-topics --bootstrap-server broker1:29092 --create --if-not-exists --topic $$t --partitions 3 --replication-factor 2;
       done;
-      echo 'Topics ready';
       "
-    networks: [kafka-net]
+    networks: [local-iceberg-lakehouse]
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -68,8 +67,7 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker1:29092,broker2:29093
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
-    networks: [kafka-net]
+    networks: [local-iceberg-lakehouse]
 
   producer:
     build: ./producer
@@ -80,9 +78,9 @@ services:
       TOPIC1: Topic1
       TOPIC2: Topic2
       CSV_PATH: /app/data/Divvy_Trips_2019_Q4.csv
-      SEND_DELAY_MS: "5"
-      MAX_ROWS: "1000"
-    networks: [kafka-net]
+      SEND_DELAY_MS: "0"
+      MAX_ROWS: "0"
+    networks: [local-iceberg-lakehouse]
 
   streams:
     build: ./streams
@@ -92,12 +90,84 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: broker1:29092,broker2:29093
       INPUT_TOPIC: Topic1
       APP_ID: trips-streams-app
-      OUT_AVG: avg-duration-per-day
-      OUT_COUNT: trips-count-per-day
-      OUT_TOP_START: top-start-station-per-day
-      OUT_TOP3: top3-stations-per-day
-    networks: [kafka-net]
+    networks: [local-iceberg-lakehouse]
+
+  # ---------- Lakehouse stack ----------
+  polaris:
+    image: apache/polaris:latest
+    platform: linux/amd64
+    container_name: polaris
+    ports:
+      - "8181:8181"
+      - "8182:8182"
+    networks: [local-iceberg-lakehouse]
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ENDPOINT_URL_STS: http://minio:9000
+      POLARIS_BOOTSTRAP_CREDENTIALS: default-realm,root,secret
+      polaris.features.DROP_WITH_PURGE_ENABLED: "true"
+      polaris.realm-context.realms: default-realm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8182/q/health"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    ports:
+      - "8080:8080"
+    environment:
+      - TRINO_JVM_OPTS=-Xmx1G
+    networks: [local-iceberg-lakehouse]
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    volumes:
+      - ./minio_data:/data
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+      MINIO_DOMAIN: minio
+    networks:
+      local-iceberg-lakehouse:
+        aliases:
+          - warehouse.minio
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  minio-client:
+    image: minio/mc:latest
+    container_name: minio-client
+    depends_on: [minio]
+    networks: [local-iceberg-lakehouse]
+    volumes:
+      - /tmp:/tmp
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: dummy-region
+    entrypoint: >
+      /bin/sh -c "
+      until (mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      mc rm -r --force minio/warehouse || true;
+      mc mb minio/warehouse;
+      mc anonymous set public minio/warehouse;
+      tail -f /dev/null
+      "
 
 networks:
-  kafka-net:
-    name: kafka-net
+  local-iceberg-lakehouse:
+    name: local-iceberg-lakehouse
