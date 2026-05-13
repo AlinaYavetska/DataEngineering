@@ -1,5 +1,8 @@
 version: "3.8"
 
+# Lab 4 розширює Lab 3 — додає Java Kafka Streams застосунок.
+# Сервіси Kafka/Zookeeper/Kafka UI/Producer ті ж самі (продубльовані тут, щоб lab4 запускалась окремо).
+
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
@@ -7,16 +10,13 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    networks:
-      - kafka-net
+    networks: [kafka-net]
 
   broker1:
     image: confluentinc/cp-kafka:7.6.1
     container_name: broker1
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
+    depends_on: [zookeeper]
+    ports: ["9092:9092"]
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -27,16 +27,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    networks:
-      - kafka-net
+    networks: [kafka-net]
 
   broker2:
     image: confluentinc/cp-kafka:7.6.1
     container_name: broker2
-    depends_on:
-      - zookeeper
-    ports:
-      - "9093:9093"
+    depends_on: [zookeeper]
+    ports: ["9093:9093"]
     environment:
       KAFKA_BROKER_ID: 2
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -47,46 +44,37 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    networks:
-      - kafka-net
+    networks: [kafka-net]
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.1
     container_name: kafka-init
-    depends_on:
-      - broker1
-      - broker2
+    depends_on: [broker1, broker2]
     entrypoint: >
       /bin/sh -c "
-      echo 'Waiting for brokers...';
       cub kafka-ready -b broker1:29092 2 60;
-      kafka-topics --bootstrap-server broker1:29092 --create --if-not-exists --topic Topic1 --partitions 3 --replication-factor 2;
-      kafka-topics --bootstrap-server broker1:29092 --create --if-not-exists --topic Topic2 --partitions 3 --replication-factor 2;
-      echo 'Topics created';
+      for t in Topic1 Topic2 avg-duration-per-day trips-count-per-day top-start-station-per-day top3-stations-per-day; do
+        kafka-topics --bootstrap-server broker1:29092 --create --if-not-exists --topic $$t --partitions 3 --replication-factor 2;
+      done;
+      echo 'Topics ready';
       "
-    networks:
-      - kafka-net
+    networks: [kafka-net]
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
-    depends_on:
-      - broker1
-      - broker2
-    ports:
-      - "8080:8080"
+    depends_on: [broker1, broker2]
+    ports: ["8085:8080"]
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker1:29092,broker2:29093
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
-    networks:
-      - kafka-net
+    networks: [kafka-net]
 
   producer:
     build: ./producer
     container_name: producer
-    depends_on:
-      - kafka-init
+    depends_on: [kafka-init]
     environment:
       KAFKA_BOOTSTRAP_SERVERS: broker1:29092,broker2:29093
       TOPIC1: Topic1
@@ -94,8 +82,21 @@ services:
       CSV_PATH: /app/data/Divvy_Trips_2019_Q4.csv
       SEND_DELAY_MS: "5"
       MAX_ROWS: "1000"
-    networks:
-      - kafka-net
+    networks: [kafka-net]
+
+  streams:
+    build: ./streams
+    container_name: streams
+    depends_on: [kafka-init]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: broker1:29092,broker2:29093
+      INPUT_TOPIC: Topic1
+      APP_ID: trips-streams-app
+      OUT_AVG: avg-duration-per-day
+      OUT_COUNT: trips-count-per-day
+      OUT_TOP_START: top-start-station-per-day
+      OUT_TOP3: top3-stations-per-day
+    networks: [kafka-net]
 
 networks:
   kafka-net:
